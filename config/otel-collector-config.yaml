@@ -1,0 +1,35 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'demo-app'
+          static_configs:
+            - targets: ['host.docker.internal:8000']
+
+processors:
+  batch:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 4000
+    spike_limit_mib: 500
+
+exporters:
+  otlphttp:
+    endpoint: "http://tempo:4318"
+  prometheusremotewrite:
+    endpoint: "http://mimir:9009/api/v1/push"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp]
+    metrics:
+      receivers: [prometheus]
+      processors: [batch, memory_limiter]
+      exporters: [prometheusremotewrite]

@@ -1,0 +1,22 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+  namespace: default
+spec:
+  image: prom/prometheus:latest
+  replicas: 1
+  retention: 24h
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 10Gi
+  serviceMonitorSelector:
+    matchLabels:
+      app: observability
+  serviceMonitorNamespaceSelector: {}
+  ruleSelector: {}
+  serviceAccountName: prometheus

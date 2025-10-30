@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"Service","metadata":{"annotations":{},"name":"otel-collector","namespace":"observability"},"spec":{"ports":[{"name":"grpc","port":4317,"targetPort":4317},{"name":"http","port":4318,"targetPort":4318},{"name":"metrics","port":8889,"targetPort":8889}],"selector":{"app":"otel-collector"},"type":"ClusterIP"}}
+  creationTimestamp: "2025-10-30T10:06:01Z"
+  name: otel-collector
+  namespace: observability
+  resourceVersion: "1083"
+  uid: 8dd0598f-5849-4c2d-ae4b-20d4b3a62374
+spec:
+  clusterIP: 10.97.153.77
+  clusterIPs:
+  - 10.97.153.77
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: grpc
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  - name: http
+    port: 4318
+    protocol: TCP
+    targetPort: 4318
+  - name: metrics
+    port: 8889
+    protocol: TCP
+    targetPort: 8889
+  selector:
+    app: otel-collector
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}

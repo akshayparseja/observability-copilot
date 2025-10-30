@@ -1,0 +1,27 @@
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 4318
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+        http:
+
+ingester:
+  chunk_idle_period: 1h
+  max_chunk_age: 1h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo/traces
+
+ruler:
+  alertmanager_url: http://localhost:9093
+
+compactor:
+  working_directory: /tmp/tempo/compactor
+  shared_store: local
