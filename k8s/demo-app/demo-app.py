@@ -28,7 +28,8 @@ try:
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.instrumentation.flask import FlaskInstrumentor
     from opentelemetry.instrumentation.requests import RequestsInstrumentor
-    
+    from flask import Flask, Response  # ← ADD Response HERE
+    from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST  
     print("[3] OTel imports OK", flush=True)
     print("[4] Creating OTLP exporter to otel-collector.observability.svc.cluster.local:4317", flush=True)
     
@@ -71,7 +72,7 @@ def health():
 
 @app.route('/metrics')
 def metrics():
-    return generate_latest()
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 if __name__ == '__main__':
     print("[RUN] Starting Flask server on 0.0.0.0:8080", flush=True)
