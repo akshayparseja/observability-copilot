@@ -69,11 +69,10 @@ def hello():
 @app.route('/health')
 def health():
     return 'OK', 200
-
-@app.route('/metrics')
+    
+@app.route("/metrics")
 def metrics():
-    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
-
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 if __name__ == '__main__':
     print("[RUN] Starting Flask server on 0.0.0.0:8080", flush=True)
     app.run(host='0.0.0.0', port=8080)

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: observability-copilot
+data:
+  DATABASE_URL: "postgres://postgres:postgres@postgres-postgresql.default.svc.cluster.local:5432/copilot?sslmode=disable"
+  PORT: "8000"

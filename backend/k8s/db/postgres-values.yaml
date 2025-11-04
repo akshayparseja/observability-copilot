@@ -1,0 +1,20 @@
+auth:
+  username: postgres
+  password: postgres
+  database: copilot
+  existingSecret: ""
+
+primary:
+  persistence:
+    enabled: true
+    storageClass: "standard"
+    size: 1Gi
+  service:
+    type: ClusterIP
+    port: 5432
+
+metrics:
+  enabled: false
+
+backup:
+  enabled: false
