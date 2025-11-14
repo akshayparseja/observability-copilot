@@ -522,9 +522,6 @@ curl -X PUT http://localhost:8000/api/v1/repos/kubernetes/services/kubernetes-se
   -H "Content-Type: application/json" \
   -d '{ "telemetry_mode": "metrics" }'
 ```
-
-
-
 ## 📋 Roadmap
 
 ### Phase 1 (Current)
@@ -541,62 +538,14 @@ curl -X PUT http://localhost:8000/api/v1/repos/kubernetes/services/kubernetes-se
 
 ### Phase 3 ( To be Planned)
 
-
 ## 🤝 Contributing
 
 We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on:
-
-- Setting up your development environment
-- Code style and conventions
-- Commit message format
-- Pull request process
-- Testing requirements
-- Documentation standards
-
-### Quick Start for Contributors
-
-```bash
-# Fork and clone
-git clone https://github.com/YOUR_USERNAME/observability-copilot.git
-cd observability-copilot
-
-# Create feature branch
-git checkout -b feat/your-feature-name
-
-# Make changes, test, and commit
-git commit -m "feat(scope): description of changes"
-
-# Push and create PR
-git push origin feat/your-feature-name
-```
-
-### Areas to Help
-
-1. **Add Framework Support** - Extend `pkg/generator/` with Node.js, .NET, Rust
-2. **Improve Detection** - Enhance pattern matching in `pkg/scanner/`
-3. **Add Authentication** - Implement user auth and API keys
-4. **UI Improvements** - Update React components for better UX
-5. **Testing** - Add comprehensive unit and integration tests
-6. **Security** - Review and improve security implementations
-7. **Documentation** - Add examples, guides, and troubleshooting
-
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines and areas.
 
 ## 📄 License
 
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
-
-### What This Means
-
-You are free to:
-- ✅ Use this project commercially
-- ✅ Modify and distribute the code
-- ✅ Use for private projects
-- ✅ Include in proprietary software
-
-All we ask is that you:
-- 📋 Include the original copyright notice
-- 📋 Include the license text
 
 **More info:** [MIT License on OpenSource.org](https://opensource.org/licenses/MIT)
 
@@ -606,17 +555,6 @@ All we ask is that you:
 - 📖 **Documentation** - Check [`docs/OBSERVABILITY_SETUP.md`](docs/OBSERVABILITY_SETUP.md) for detailed observability stack information
 - 💡 **Ideas** - Discussions welcome in GitHub Discussions
 
-## 🙏 Acknowledgments
-
-Built with modern open-source technologies:
-
-- **Go** - Fast, concurrent backend
-- **React 19** - Modern frontend framework
-- **PostgreSQL** - Reliable data persistence
-- **OpenTelemetry** - Industry-standard distributed tracing
-- **Prometheus** - Battle-tested metrics collection
-- **Gin** - High-performance web framework
-- **Material-UI** - Beautiful component library
 
 ## 📞 Quick Links
 
