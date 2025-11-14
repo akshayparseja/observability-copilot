@@ -206,7 +206,6 @@ The platform supports four flexible telemetry modes:
 | **metrics** | ✅ | ❌ | Cost-conscious, basic monitoring |
 | **traces** | ❌ | ✅ | Debugging, performance analysis, error tracking |
 | **both** | ✅ | ✅ | Complete observability (recommended) |
-| **none** | ❌ | ❌ | Disable telemetry collection |
 
 ### Smart Mode Selection
 
