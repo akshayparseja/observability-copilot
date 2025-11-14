@@ -21,17 +21,21 @@ import {
   CircularProgress,
   Chip,
   Alert,
+  IconButton,
 } from "@mui/material";
 import FolderIcon from "@mui/icons-material/Folder";
 import SearchIcon from "@mui/icons-material/Search";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import CancelIcon from "@mui/icons-material/Cancel";
+import GitHubIcon from "@mui/icons-material/GitHub";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import axios from "axios";
 import API_ENDPOINTS from "../config/api";
 
 interface Repo {
   id: string;
   name: string;
+  github_url: string;
 }
 
 interface ScanResult {
@@ -87,10 +91,12 @@ export default function ImportForm({
   const [updatingMode, setUpdatingMode] = useState(false);
   const [serviceInfo, setServiceInfo] = useState<ServiceInfo | null>(null);
 
-  // NEW: Scan result state
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scanning, setScanning] = useState(false);
   const [showScanResult, setShowScanResult] = useState(false);
+  
+  // NEW: PR creation state
+  const [creatingPR, setCreatingPR] = useState(false);
 
   useEffect(() => {
     fetchRepos();
@@ -113,7 +119,6 @@ export default function ImportForm({
     repo.name.toLowerCase().includes(search.toLowerCase())
   );
 
-  // NEW: Scan repo first before import
   const handleScan = async () => {
     if (!githubURL) return;
 
@@ -122,18 +127,15 @@ export default function ImportForm({
     setScanResult(null);
 
     try {
-      // Call a new endpoint that just scans without importing
-      // For now, we'll use the import endpoint to get scan result
       const response = await axios.post(API_ENDPOINTS.IMPORTS, {
         github_url: githubURL,
-        telemetry_mode: "none", // Temporary - we'll update after user selects
+        telemetry_mode: "none",
       });
 
       const result = response.data.result as ScanResult;
       setScanResult(result);
       setShowScanResult(true);
 
-      // Auto-select default mode based on scan result
       const defaultMode = getDefaultTelemetryMode(result);
       setSelectedMode(defaultMode);
 
@@ -145,7 +147,6 @@ export default function ImportForm({
     }
   };
 
-  // Determine default telemetry mode based on scan
   const getDefaultTelemetryMode = (result: ScanResult): string => {
     const { has_metrics, has_otel } = result;
 
@@ -155,7 +156,6 @@ export default function ImportForm({
     return "none";
   };
 
-  // Import with selected mode
   const handleImport = async () => {
     if (!githubURL || !scanResult) return;
 
@@ -168,7 +168,6 @@ export default function ImportForm({
 
       console.log("Import successful with mode:", selectedMode);
       
-      // Reset form
       setGithubURL("");
       setSelectedMode("none");
       setScanResult(null);
@@ -184,21 +183,18 @@ export default function ImportForm({
     }
   };
 
-  // On clicking repo in list for editing
   const onSelectRepo = async (repo: Repo) => {
     setSelectedRepo(repo);
     setServiceInfo(null);
 
     try {
-      // Fetch plan to get service info
       const planRes = await axios.get(API_ENDPOINTS.PLAN(repo.id));
       const services = planRes.data.services || [];
 
       if (services.length > 0) {
-        setServiceInfo(services[0]); // Use first service
+        setServiceInfo(services[0]);
       }
 
-      // Fetch current toggle mode
       const svcName = services[0]?.name || repo.name;
       const toggleRes = await axios.get(
         API_ENDPOINTS.TOGGLES(repo.id, svcName, "dev")
@@ -210,7 +206,6 @@ export default function ImportForm({
     }
   };
 
-  // Update telemetry mode of selected repo's service
   const onUpdateTelemetryMode = async () => {
     if (!selectedRepo) return;
     setUpdatingMode(true);
@@ -229,29 +224,50 @@ export default function ImportForm({
     }
   };
 
-  // Determine if option should be disabled (for scan result)
+  // NEW: Create PR handler
+  const handleCreatePR = async () => {
+    if (!selectedRepo) return;
+    
+    setCreatingPR(true);
+    try {
+      const response = await axios.post(
+        `${API_ENDPOINTS.REPOS}/${selectedRepo.id}/create-pr`,
+        { telemetry_mode: selectedMode }
+      );
+      
+      const prURL = response.data.pr_url;
+      alert(`✅ Pull Request created successfully!\n\nOpening in new tab: ${prURL}`);
+      window.open(prURL, "_blank");
+      
+      // Refresh repo list to update instrumentation status
+      await fetchRepos();
+    } catch (error: any) {
+      const msg = error.response?.data?.error || "Failed to create PR";
+      alert(`❌ Error: ${msg}`);
+      console.error("Create PR failed:", error);
+    } finally {
+      setCreatingPR(false);
+    }
+  };
+
   const isOptionDisabled = (mode: string) => {
     const info = scanResult || serviceInfo;
     if (!info) return false;
 
     const { has_metrics, has_otel } = info;
 
-    // Both metrics and traces already exist
     if (has_metrics && has_otel) {
-      return mode !== "none"; // Only allow "none"
+      return mode !== "none";
     }
 
-    // Has metrics but no traces
     if (has_metrics && !has_otel) {
       return mode === "metrics" || mode === "both";
     }
 
-    // Has traces but no metrics
     if (!has_metrics && has_otel) {
       return mode === "traces" || mode === "both";
     }
 
-    // Has neither - nothing disabled
     return false;
   };
 
@@ -279,7 +295,6 @@ export default function ImportForm({
         Repo import
       </Typography>
 
-      {/* Import Form */}
       <Box sx={{ display: "flex", gap: 2, mb: 2 }}>
         <TextField
           fullWidth
@@ -289,7 +304,7 @@ export default function ImportForm({
           value={githubURL}
           onChange={(e) => {
             setGithubURL(e.target.value);
-            setShowScanResult(false); // Reset scan when URL changes
+            setShowScanResult(false);
             setScanResult(null);
           }}
         />
@@ -304,7 +319,6 @@ export default function ImportForm({
         </Button>
       </Box>
 
-      {/* Scan Result */}
       {showScanResult && scanResult && (
         <Card variant="outlined" sx={{ mb: 3, borderRadius: 2 }}>
           <CardContent>
@@ -389,7 +403,6 @@ export default function ImportForm({
         </Card>
       )}
 
-      {/* Search Existing Repos */}
       <TextField
         fullWidth
         size="small"
@@ -437,6 +450,21 @@ export default function ImportForm({
                   bgcolor:
                     selectedRepo?.id === repo.id ? "action.selected" : "inherit",
                 }}
+                secondaryAction={
+                  repo.github_url && (
+                    <IconButton
+                      edge="end"
+                      aria-label="open-github"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.open(repo.github_url, "_blank");
+                      }}
+                      size="small"
+                    >
+                      <GitHubIcon fontSize="small" />
+                    </IconButton>
+                  )
+                }
               >
                 <ListItemButton onClick={() => onSelectRepo(repo)}>
                   <ListItemIcon>
@@ -457,41 +485,51 @@ export default function ImportForm({
         )}
       </Paper>
 
-      {/* Edit Existing Repo */}
       {selectedRepo && (
         <Card variant="outlined" sx={{ borderRadius: 2, borderColor: "#e5e7eb" }}>
           <CardContent>
-            <Box mb={2}>
-              <Typography variant="h6" fontWeight={700} mb={1}>
+            <Box mb={2} display="flex" justifyContent="space-between" alignItems="center">
+              <Typography variant="h6" fontWeight={700}>
                 {selectedRepo.name}
               </Typography>
-              {serviceInfo && (
-                <Box display="flex" gap={1} mb={2}>
-                  <Chip
-                    label={`Framework: ${serviceInfo.framework}`}
-                    size="small"
-                    color="primary"
-                    variant="outlined"
-                  />
-                  {serviceInfo.has_metrics && (
-                    <Chip
-                      icon={<CheckCircleIcon />}
-                      label="Has Metrics"
-                      size="small"
-                      color="success"
-                    />
-                  )}
-                  {serviceInfo.has_otel && (
-                    <Chip
-                      icon={<CheckCircleIcon />}
-                      label="Has Traces"
-                      size="small"
-                      color="info"
-                    />
-                  )}
-                </Box>
+              {selectedRepo.github_url && (
+                <Button
+                  size="small"
+                  startIcon={<GitHubIcon />}
+                  endIcon={<OpenInNewIcon />}
+                  onClick={() => window.open(selectedRepo.github_url, "_blank")}
+                  sx={{ textTransform: "none" }}
+                >
+                  View on GitHub
+                </Button>
               )}
             </Box>
+            {serviceInfo && (
+              <Box display="flex" gap={1} mb={2}>
+                <Chip
+                  label={`Framework: ${serviceInfo.framework}`}
+                  size="small"
+                  color="primary"
+                  variant="outlined"
+                />
+                {serviceInfo.has_metrics && (
+                  <Chip
+                    icon={<CheckCircleIcon />}
+                    label="Has Metrics"
+                    size="small"
+                    color="success"
+                  />
+                )}
+                {serviceInfo.has_otel && (
+                  <Chip
+                    icon={<CheckCircleIcon />}
+                    label="Has Traces"
+                    size="small"
+                    color="info"
+                  />
+                )}
+              </Box>
+            )}
 
             <FormControl component="fieldset" sx={{ mb: 2, width: "100%" }}>
               <FormLabel component="legend" sx={{ fontWeight: 700, mb: 2 }}>
@@ -535,15 +573,29 @@ export default function ImportForm({
                 })}
               </RadioGroup>
             </FormControl>
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={onUpdateTelemetryMode}
-              disabled={updatingMode}
-              sx={{ fontWeight: 700 }}
-            >
-              {updatingMode ? "Updating..." : "Update Telemetry Mode"}
-            </Button>
+            
+            {/* UPDATED: Two buttons side by side */}
+            <Box display="flex" gap={2}>
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={onUpdateTelemetryMode}
+                disabled={updatingMode}
+                sx={{ fontWeight: 700, flex: 1 }}
+              >
+                {updatingMode ? "Updating..." : "Update Telemetry Mode"}
+              </Button>
+              
+              <Button
+                variant="outlined"
+                color="secondary"
+                onClick={handleCreatePR}
+                disabled={creatingPR || selectedMode === "none"}
+                sx={{ fontWeight: 700, flex: 1 }}
+              >
+                {creatingPR ? "Creating PR..." : "Scan & Create PR"}
+              </Button>
+            </Box>
           </CardContent>
         </Card>
       )}

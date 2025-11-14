@@ -10,6 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
 	"observability-copilot/pkg/scanner"
+	"observability-copilot/pkg/generator"
+	"observability-copilot/pkg/github"
 )
 
 var db *sql.DB
@@ -118,29 +120,131 @@ func main() {
 	fmt.Println("✅ addded repos endpoint")
 
 	router.GET("/api/v1/repos", func(c *gin.Context) {
-		rows, err := db.Query("SELECT id, name FROM repos ORDER BY created_at DESC")
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-		defer rows.Close()
+    rows, err := db.Query("SELECT id, name, github_url FROM repos ORDER BY created_at DESC")
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    defer rows.Close()
 
-		repos := []map[string]string{}
-		for rows.Next() {
-			var id, name string
-			if err := rows.Scan(&id, &name); err != nil {
-				c.JSON(500, gin.H{"error": err.Error()})
-				return
-			}
-			repos = append(repos, map[string]string{
-				"id":   id,
-				"name": name,
-			})
-		}
+    repos := []map[string]string{}
+    for rows.Next() {
+        var id, name, githubURL string
+        if err := rows.Scan(&id, &name, &githubURL); err != nil {
+            c.JSON(500, gin.H{"error": err.Error()})
+            return
+        }
+        repos = append(repos, map[string]string{
+            "id":         id,
+            "name":       name,
+            "github_url": githubURL,  // ADD THIS
+        })
+    }
 
-		c.JSON(200, repos)
-	})
-
+    c.JSON(200, repos)
+})
+router.POST("/api/v1/repos/:repo_id/create-pr", func(c *gin.Context) {
+    repoID := c.Param("repo_id")
+    
+    var req struct {
+        TelemetryMode string `json:"telemetry_mode"`
+    }
+    if err := c.BindJSON(&req); err != nil {
+        c.JSON(400, gin.H{"error": "Invalid request"})
+        return
+    }
+    
+    // Get repo info
+    var githubURL string
+    err := db.QueryRow("SELECT github_url FROM repos WHERE id = $1", repoID).Scan(&githubURL)
+    if err != nil {
+        c.JSON(404, gin.H{"error": "Repo not found"})
+        return
+    }
+    
+    // Get service info (framework, existing instrumentation)
+    var framework, serviceName string
+    var hasMetrics, hasOtel bool
+    err = db.QueryRow(`
+        SELECT framework, name, has_metrics, has_otel 
+        FROM services 
+        WHERE repo_id = $1 
+        LIMIT 1
+    `, repoID).Scan(&framework, &serviceName, &hasMetrics, &hasOtel)
+    
+    if err != nil {
+        c.JSON(500, gin.H{"error": "Failed to get service info"})
+        return
+    }
+    
+    // Determine what to add based on existing instrumentation
+    modeToAdd := req.TelemetryMode
+    
+    // Smart detection: only add what's missing
+    if req.TelemetryMode == "both" {
+        if hasMetrics && hasOtel {
+            c.JSON(400, gin.H{"error": "Already has both metrics and traces"})
+            return
+        } else if hasMetrics && !hasOtel {
+            modeToAdd = "traces" // Only add traces
+        } else if !hasMetrics && hasOtel {
+            modeToAdd = "metrics" // Only add metrics
+        }
+        // else: add both (neither exists)
+    } else if req.TelemetryMode == "metrics" && hasMetrics {
+        c.JSON(400, gin.H{"error": "Already has metrics"})
+        return
+    } else if req.TelemetryMode == "traces" && hasOtel {
+        c.JSON(400, gin.H{"error": "Already has traces"})
+        return
+    }
+    
+    // Generate instrumentation plan
+    plan, err := generator.Generate(framework, serviceName, modeToAdd)
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    
+    // Create PR
+    prURL, err := github.CreateInstrumentationPR(githubURL, plan, hasMetrics, hasOtel)
+    if err != nil {
+        c.JSON(500, gin.H{"error": fmt.Sprintf("Failed to create PR: %v", err)})
+        return
+    }
+    
+    c.JSON(200, gin.H{
+        "pr_url": prURL,
+        "message": "Pull request created successfully",
+    })
+})
+router.GET("/api/v1/repos/:repo_id/instrumentation-plan", func(c *gin.Context) {
+    repoID := c.Param("repo_id")
+    
+    // Get service info from DB
+    var framework, serviceName, telemetryMode string
+    err := db.QueryRow(`
+        SELECT s.framework, s.name, t.telemetry_mode
+        FROM services s
+        JOIN togglespecs t ON s.id = t.service_id
+        WHERE s.repo_id = $1
+        LIMIT 1
+    `, repoID).Scan(&framework, &serviceName, &telemetryMode)
+    
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    
+    // Generate instrumentation plan
+    plan, err := generator.Generate(framework, serviceName, telemetryMode)
+    if err != nil {
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    
+    c.JSON(200, plan)
+})
 	// POST /api/v1/imports - Import a new repository
 	router.POST("/api/v1/imports", func(c *gin.Context) {
 		var req struct {
@@ -213,6 +317,10 @@ func main() {
 	// GET /api/v1/repos/:repo_id/plan
 	router.GET("/api/v1/repos/:repo_id/plan", func(c *gin.Context) {
 		repoID := c.Param("repo_id")
+		
+		// Get GitHub URL
+		var githubURL string
+		db.QueryRow("SELECT github_url FROM repos WHERE id = $1", repoID).Scan(&githubURL)
 
 		rows, err := db.Query(
 			"SELECT name, framework, has_metrics, has_otel FROM services WHERE repo_id = $1",

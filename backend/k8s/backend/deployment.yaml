@@ -15,10 +15,13 @@ spec:
     spec:
       containers:
       - name: backend
-        image: observability-copilot:latest
+        image: your-backend-image:latest
         imagePullPolicy: Never
         ports:
         - containerPort: 8000
+        env:
+        - name: GITHUB_TOKEN
+          value: <GITHUB_TOKEN>
         envFrom:
         - configMapRef:
             name: backend-config
