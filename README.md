@@ -678,10 +678,6 @@ We welcome contributions! Areas to help:
 4. Push to branch: `git push origin feat/amazing-feature`
 5. Open a Pull Request
 
-## 📄 License
-
-[Add your license here - typically MIT, Apache 2.0, or GPL]
-
 ## 💬 Support
 
 - 📧 **Issues** - Open an issue on GitHub for bugs and feature requests
