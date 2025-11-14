@@ -399,57 +399,6 @@ Once repository is scanned, user can:
 
 All changes are persisted to the database.
 
-## 📝 Code Generation Examples
-
-### Go Service - "both" mode
-
-**Changes applied to `go.mod`:**
-```go
-require (
-    go.opentelemetry.io/otel v1.21.0
-    go.opentelemetry.io/otel/sdk v1.21.0
-    go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.21.0
-    go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin v0.46.1
-    github.com/prometheus/client_golang v1.17.0
-)
-```
-
-**Changes to `main.go`:**
-- Add tracer initialization function
-- Add prometheus metrics setup
-- Add Gin middleware for automatic tracing
-- Add `/metrics` endpoint exposure
-
-### Python Service - "metrics" mode
-
-**Changes to `requirements.txt`:**
-```
-prometheus-client==0.18.0
-```
-
-**Changes to `main.py` or similar:**
-- Import prometheus client
-- Create metrics (counters, gauges, histograms)
-- Add metrics endpoint
-- Create request middleware to track metrics
-
-### Java Service - "traces" mode
-
-**Changes to `pom.xml`:**
-```xml
-<dependency>
-    <groupId>io.opentelemetry</groupId>
-    <artifactId>opentelemetry-sdk</artifactId>
-    <version>1.21.0</version>
-</dependency>
-```
-
-**Changes to application code:**
-- Initialize OTel tracer provider
-- Configure OTLP exporter
-- Add tracer to HTTP client and servlet filters
-
-## 🔐 Security Considerations
 
 ### GitHub Token Management
 
@@ -545,20 +494,7 @@ curl -X POST http://localhost:8000/api/v1/imports \
 curl http://localhost:8000/api/v1/repos/kubernetes/plan
 ```
 
-**Response:**
-```json
-{
-  "repo_id": "kubernetes",
-  "services": [
-    {
-      "name": "kubernetes-service",
-      "framework": "Go",
-      "has_metrics": true,
-      "has_otel": false
-    }
-  ]
-}
-```
+
 
 ### 3. Create Pull Request
 
@@ -588,60 +524,7 @@ curl -X PUT http://localhost:8000/api/v1/repos/kubernetes/services/kubernetes-se
   -d '{ "telemetry_mode": "metrics" }'
 ```
 
-## 🐛 Troubleshooting
 
-### Backend Issues
-
-**Problem: `Failed to connect to database`**
-- Check PostgreSQL is running: `docker ps | grep postgres`
-- Verify DATABASE_URL: `echo $DATABASE_URL`
-- Check credentials are correct
-
-**Solution:**
-```bash
-docker run -d \
-  --name copilot-db \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=copilot \
-  -p 5432:5432 \
-  postgres:13
-```
-
-**Problem: `GITHUB_TOKEN not set`**
-- Backend cannot create PRs without token
-- Generate one: https://github.com/settings/tokens (scope: `repo`)
-
-**Solution:**
-```bash
-export GITHUB_TOKEN="ghp_xxxxxxxxxxxx"
-go run ./cmd/server/main.go
-```
-
-
-### Frontend Issues
-
-**Problem: `API requests return 404`**
-- Backend URL is incorrect
-- Check `src/config/api.ts` has correct base URL
-- In Docker, use `http://backend:8000/api`
-
-**Problem: `CORS errors`**
-- Backend CORS middleware not enabled
-- Check backend is running with CORSMiddleware() applied
-
-**Solution:** Verify backend logs show "✅ Enabled CORS middleware"
-
-### Repository Scanning Issues
-
-**Problem: `Framework detection returned empty`**
-- Repository doesn't have expected framework files
-- Ensure `go.mod`, `package.json`, `pom.xml`, etc. exist
-
-**Problem: `git clone timeout`**
-- Large repository or slow network
-- Currently no timeout implemented (TODO: add timeout)
-
-**Solution:** Try with smaller public repo first, or check network
 
 ## 📋 Roadmap
 
