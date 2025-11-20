@@ -97,33 +97,33 @@ func CreateInstrumentationPR(
 					return "", fmt.Errorf("failed to modify %s: %w", change.Path, err)
 				}
 			} else {
-					// Ensure parent directory exists
-					if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-						return "", fmt.Errorf("failed to create parent dirs for %s: %w", change.Path, err)
+				// Ensure parent directory exists
+				if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+					return "", fmt.Errorf("failed to create parent dirs for %s: %w", change.Path, err)
+				}
+				// Determine if file already exists
+				_, statErr := os.Stat(filePath)
+				willCreate := os.IsNotExist(statErr)
+				// Open file for append, create if not exists
+				f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+				if err != nil {
+					return "", fmt.Errorf("failed to open %s: %w", change.Path, err)
+				}
+				// If we're creating a new Go file, ensure it has a package declaration
+				if willCreate && strings.HasSuffix(filePath, ".go") {
+					contentToWrite := change.Content
+					if !strings.Contains(contentToWrite, "package ") {
+						contentToWrite = "package main\n\n" + contentToWrite
 					}
-					// Determine if file already exists
-					_, statErr := os.Stat(filePath)
-					willCreate := os.IsNotExist(statErr)
-					// Open file for append, create if not exists
-					f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-					if err != nil {
-						return "", fmt.Errorf("failed to open %s: %w", change.Path, err)
-					}
-					// If we're creating a new Go file, ensure it has a package declaration
-					if willCreate && strings.HasSuffix(filePath, ".go") {
-						contentToWrite := change.Content
-						if !strings.Contains(contentToWrite, "package ") {
-							contentToWrite = "package main\n\n" + contentToWrite
-						}
-						_, err = f.WriteString(contentToWrite)
-					} else {
-						_, err = f.WriteString(change.Content)
-					}
-					f.Close()
-					if err != nil {
-						return "", err
-					}
-					modifiedFiles = append(modifiedFiles, change.Path)
+					_, err = f.WriteString(contentToWrite)
+				} else {
+					_, err = f.WriteString(change.Content)
+				}
+				f.Close()
+				if err != nil {
+					return "", err
+				}
+				modifiedFiles = append(modifiedFiles, change.Path)
 			}
 		case "create":
 			// Create new file (and parent dirs)
