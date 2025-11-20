@@ -1,329 +1,711 @@
 package scanner
 
 import (
-    "fmt"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "strings"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
+// FrameworkDetection represents a detected framework/language in the repo
+type FrameworkDetection struct {
+	Language    string `json:"language"`     // "Go", "Python", "Java", etc.
+	Framework   string `json:"framework"`    // "Gin", "Flask", "Spring Boot", etc.
+	HasMetrics  bool   `json:"has_metrics"`  // Already has Prometheus metrics
+	HasOTel     bool   `json:"has_otel"`     // Already has OpenTelemetry
+	ServiceName string `json:"service_name"` // e.g., "go-service", "python-service"
+}
+
+// Candidate describes file-level matches where instrumentation could be inserted
+type Candidate struct {
+	Language    string   `json:"language"`
+	Framework   string   `json:"framework"`
+	Kind        string   `json:"kind"` // "metrics" or "otel"
+	Patterns    []string `json:"patterns"`
+	Files       []string `json:"files"`
+	ServiceName string   `json:"service_name"`
+}
+
+// ScanResult contains all detected frameworks
 type ScanResult struct {
-    Framework   string   `json:"framework"`
-    HasMetrics  bool     `json:"has_metrics"`
-    HasOTel     bool     `json:"has_otel"`
-    Services    []string `json:"services"`
+	Frameworks []FrameworkDetection `json:"frameworks"`
+	Services   []string             `json:"services"` // Deprecated, use Frameworks instead
+	Candidates []Candidate          `json:"candidates"`
 }
 
-func ScanRepo(repoURL, repoID string) (*ScanResult, error) {
-    clonePath := filepath.Join("/tmp", repoID)
-    os.RemoveAll(clonePath)
+// ScanRepo scans a repository and detects ALL languages/frameworks present
+// ScanRepo scans a repository and detects ALL languages/frameworks present
+// If branch is provided (non-empty), the specified branch will be cloned.
+func ScanRepo(repoURL, repoID, branch string) (*ScanResult, error) {
+	log.Printf("[scanner] ScanRepo started: repoID=%s url=%s branch=%s", repoID, repoURL, branch)
+	clonePath := filepath.Join("/tmp", repoID)
+	os.RemoveAll(clonePath)
 
-    cmd := exec.Command("git", "clone", "--depth=1", repoURL, clonePath)
-    if err := cmd.Run(); err != nil {
-        return nil, fmt.Errorf("failed to clone: %w", err)
-    }
+	// Clone repo (optionally a specific branch)
+	var cmd *exec.Cmd
+	if branch != "" {
+		cmd = exec.Command("git", "clone", "--depth=1", "--branch", branch, repoURL, clonePath)
+	} else {
+		cmd = exec.Command("git", "clone", "--depth=1", repoURL, clonePath)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to clone: %v output: %s", err, string(out))
+	}
+	defer os.RemoveAll(clonePath)
 
-    result := &ScanResult{Services: []string{}}
+	result := &ScanResult{
+		Frameworks: []FrameworkDetection{},
+		Services:   []string{},
+	}
 
-    if detectPython(clonePath) {
-        result.Framework = "Python"
-        if detectDjango(clonePath) {
-            result.Services = append(result.Services, "django-app")
-        } else if detectFlask(clonePath) {
-            result.Services = append(result.Services, "flask-app")
-        }
-    } else if detectGo(clonePath) {
-        result.Framework = "Go"
-        result.Services = append(result.Services, "go-service")
-    } else if detectJava(clonePath) {
-        result.Framework = "Java"
-        result.Services = append(result.Services, "java-service")
-    } else if detectDotnet(clonePath) {
-        result.Framework = ".NET"
-        result.Services = append(result.Services, "dotnet-service")
-    } else if detectNode(clonePath) {
-        result.Framework = "Node.js"
-        result.Services = append(result.Services, "nodejs-service")
-    } else if detectRust(clonePath) {
-        result.Framework = "Rust"
-        result.Services = append(result.Services, "rust-service")
-    }
+	// Detect Go
+	if detectGo(clonePath) {
+		log.Printf("[scanner] Detecting Go in %s", repoID)
+		fwName := detectGoFramework(clonePath)
+		log.Printf("[scanner] Detected Go framework: %s", fwName)
+		// Use AST-based analysis for Go to produce precise candidates
+		goCandidates, err := AnalyzeGoRepo(clonePath)
+		if err != nil {
+			// Fallback to grep-based detection on error
+			metricFiles := detectMetrics(clonePath, "Go")
+			otelFiles := detectOTel(clonePath, "Go")
+			framework := FrameworkDetection{
+				Language:    "Go",
+				Framework:   fwName,
+				HasMetrics:  len(metricFiles) > 0,
+				HasOTel:     len(otelFiles) > 0,
+				ServiceName: "go-service",
+			}
+			result.Frameworks = append(result.Frameworks, framework)
+			result.Services = append(result.Services, "go-service")
+			if len(metricFiles) > 0 {
+				result.Candidates = append(result.Candidates, Candidate{
+					Language:    "Go",
+					Framework:   fwName,
+					Kind:        "metrics",
+					Patterns:    []string{"http.Handle(\"/metrics\"", "promhttp.Handler()", "prometheus.MustRegister("},
+					Files:       metricFiles,
+					ServiceName: "go-service",
+				})
+			}
+			if len(otelFiles) > 0 {
+				result.Candidates = append(result.Candidates, Candidate{
+					Language:    "Go",
+					Framework:   fwName,
+					Kind:        "otel",
+					Patterns:    []string{"tracer.Start(", "sdktrace.NewTracerProvider(", "otlptrace"},
+					Files:       otelFiles,
+					ServiceName: "go-service",
+				})
+			}
+		} else {
+			// convert candidates into framework detection summary
+			hasMetrics := false
+			hasOtel := false
+			for _, c := range goCandidates {
+				if c.Kind == "metrics" && len(c.Files) > 0 {
+					hasMetrics = true
+				}
+				if c.Kind == "otel" && len(c.Files) > 0 {
+					hasOtel = true
+				}
+				// normalize file paths to be relative to repo
+				for i := range c.Files {
+					c.Files[i] = strings.TrimPrefix(c.Files[i], clonePath+"/")
+				}
+				result.Candidates = append(result.Candidates, c)
+			}
+			framework := FrameworkDetection{
+				Language:    "Go",
+				Framework:   fwName,
+				HasMetrics:  hasMetrics,
+				HasOTel:     hasOtel,
+				ServiceName: "go-service",
+			}
+			log.Printf("[scanner] Creating FrameworkDetection: Language=%s, Framework=%s, HasMetrics=%v, HasOTel=%v", framework.Language, framework.Framework, framework.HasMetrics, framework.HasOTel)
+			result.Frameworks = append(result.Frameworks, framework)
+			result.Services = append(result.Services, "go-service")
+		}
+	}
 
-    result.HasMetrics = detectMetrics(clonePath, result.Framework)
-    result.HasOTel = detectOTel(clonePath, result.Framework)
+	// Detect Python
+	if detectPython(clonePath) {
+		log.Printf("[scanner] Detecting Python in %s", repoID)
+		// Use AST-based analysis for Python to produce precise candidates
+		pythonCandidates, err := AnalyzePythonRepo(clonePath)
+		if err != nil {
+			// Fallback to grep-based detection on error
+			fwName := detectPythonFramework(clonePath)
+			metricFiles := detectMetrics(clonePath, "Python")
+			otelFiles := detectOTel(clonePath, "Python")
+			framework := FrameworkDetection{
+				Language:    "Python",
+				Framework:   fwName,
+				HasMetrics:  len(metricFiles) > 0,
+				HasOTel:     len(otelFiles) > 0,
+				ServiceName: "python-service",
+			}
+			log.Printf("[scanner] Detected Python framework: %s, metrics=%d, otel=%d", fwName, len(metricFiles), len(otelFiles))
+			result.Frameworks = append(result.Frameworks, framework)
+			result.Services = append(result.Services, "python-service")
+			if len(metricFiles) > 0 {
+				result.Candidates = append(result.Candidates, Candidate{
+					Language:    "Python",
+					Framework:   fwName,
+					Kind:        "metrics",
+					Patterns:    []string{"start_http_server(", "generate_latest(", "prometheus_client"},
+					Files:       metricFiles,
+					ServiceName: "python-service",
+				})
+			}
+			if len(otelFiles) > 0 {
+				result.Candidates = append(result.Candidates, Candidate{
+					Language:    "Python",
+					Framework:   fwName,
+					Kind:        "otel",
+					Patterns:    []string{"tracer.start_as_current_span(", "OTLPSpanExporter("},
+					Files:       otelFiles,
+					ServiceName: "python-service",
+				})
+			}
+		} else {
+			// Use AST-based candidates
+			hasMetrics := false
+			hasOtel := false
+			fwName := "Python"
+			for _, c := range pythonCandidates {
+				if c.Kind == "metrics" && len(c.Files) > 0 {
+					hasMetrics = true
+				}
+				if c.Kind == "otel" && len(c.Files) > 0 {
+					hasOtel = true
+				}
+				if c.Framework != "Python" {
+					fwName = c.Framework
+				}
+				// normalize file paths to be relative to repo
+				for i := range c.Files {
+					c.Files[i] = strings.TrimPrefix(c.Files[i], clonePath+"/")
+				}
+				result.Candidates = append(result.Candidates, c)
+			}
+			framework := FrameworkDetection{
+				Language:    "Python",
+				Framework:   fwName,
+				HasMetrics:  hasMetrics,
+				HasOTel:     hasOtel,
+				ServiceName: "python-service",
+			}
+			log.Printf("[scanner] Python analysis complete: framework=%s, hasMetrics=%v, hasOtel=%v", fwName, hasMetrics, hasOtel)
+			result.Frameworks = append(result.Frameworks, framework)
+			result.Services = append(result.Services, "python-service")
+		}
+	}
 
-    os.RemoveAll(clonePath)
-    return result, nil
+	// Detect Java
+	if detectJava(clonePath) {
+		log.Printf("[scanner] Detecting Java in %s", repoID)
+		fwName := detectJavaFramework(clonePath)
+		metricFiles := detectMetrics(clonePath, "Java")
+		otelFiles := detectOTel(clonePath, "Java")
+		framework := FrameworkDetection{
+			Language:    "Java",
+			Framework:   fwName,
+			HasMetrics:  len(metricFiles) > 0,
+			HasOTel:     len(otelFiles) > 0,
+			ServiceName: "java-service",
+		}
+		result.Frameworks = append(result.Frameworks, framework)
+		result.Services = append(result.Services, "java-service")
+		if len(metricFiles) > 0 {
+			result.Candidates = append(result.Candidates, Candidate{
+				Language:    "Java",
+				Framework:   fwName,
+				Kind:        "metrics",
+				Patterns:    []string{"MeterRegistry", "PrometheusMeterRegistry"},
+				Files:       metricFiles,
+				ServiceName: "java-service",
+			})
+		}
+		if len(otelFiles) > 0 {
+			result.Candidates = append(result.Candidates, Candidate{
+				Language:    "Java",
+				Framework:   fwName,
+				Kind:        "otel",
+				Patterns:    []string{"tracer.spanBuilder(", "OtlpGrpcSpanExporter"},
+				Files:       otelFiles,
+				ServiceName: "java-service",
+			})
+		}
+	}
+
+	// Detect Node.js
+	if detectNode(clonePath) {
+		log.Printf("[scanner] Detecting Node.js in %s", repoID)
+		fwName := detectNodeFramework(clonePath)
+		metricFiles := detectMetrics(clonePath, "Node.js")
+		otelFiles := detectOTel(clonePath, "Node.js")
+		framework := FrameworkDetection{
+			Language:    "Node.js",
+			Framework:   fwName,
+			HasMetrics:  len(metricFiles) > 0,
+			HasOTel:     len(otelFiles) > 0,
+			ServiceName: "nodejs-service",
+		}
+		result.Frameworks = append(result.Frameworks, framework)
+		result.Services = append(result.Services, "nodejs-service")
+		if len(metricFiles) > 0 {
+			result.Candidates = append(result.Candidates, Candidate{
+				Language:    "Node.js",
+				Framework:   fwName,
+				Kind:        "metrics",
+				Patterns:    []string{"register.metrics()", "prom-client"},
+				Files:       metricFiles,
+				ServiceName: "nodejs-service",
+			})
+		}
+		if len(otelFiles) > 0 {
+			result.Candidates = append(result.Candidates, Candidate{
+				Language:    "Node.js",
+				Framework:   fwName,
+				Kind:        "otel",
+				Patterns:    []string{"tracer.startSpan(", "@opentelemetry/sdk-trace"},
+				Files:       otelFiles,
+				ServiceName: "nodejs-service",
+			})
+		}
+	}
+
+	// Detect .NET
+	if detectDotnet(clonePath) {
+		log.Printf("[scanner] Detecting .NET in %s", repoID)
+		fwName := ".NET"
+		metricFiles := detectMetrics(clonePath, ".NET")
+		otelFiles := detectOTel(clonePath, ".NET")
+		framework := FrameworkDetection{
+			Language:    ".NET",
+			Framework:   fwName,
+			HasMetrics:  len(metricFiles) > 0,
+			HasOTel:     len(otelFiles) > 0,
+			ServiceName: "dotnet-service",
+		}
+		result.Frameworks = append(result.Frameworks, framework)
+		result.Services = append(result.Services, "dotnet-service")
+		if len(metricFiles) > 0 {
+			result.Candidates = append(result.Candidates, Candidate{
+				Language:    ".NET",
+				Framework:   fwName,
+				Kind:        "metrics",
+				Patterns:    []string{"UsePrometheusServer"},
+				Files:       metricFiles,
+				ServiceName: "dotnet-service",
+			})
+		}
+		if len(otelFiles) > 0 {
+			result.Candidates = append(result.Candidates, Candidate{
+				Language:    ".NET",
+				Framework:   fwName,
+				Kind:        "otel",
+				Patterns:    []string{"ActivitySource"},
+				Files:       otelFiles,
+				ServiceName: "dotnet-service",
+			})
+		}
+	}
+
+	// Detect Rust
+	if detectRust(clonePath) {
+		log.Printf("[scanner] Detecting Rust in %s", repoID)
+		fwName := "Rust"
+		metricFiles := detectMetrics(clonePath, "Rust")
+		otelFiles := detectOTel(clonePath, "Rust")
+		framework := FrameworkDetection{
+			Language:    "Rust",
+			Framework:   fwName,
+			HasMetrics:  len(metricFiles) > 0,
+			HasOTel:     len(otelFiles) > 0,
+			ServiceName: "rust-service",
+		}
+		result.Frameworks = append(result.Frameworks, framework)
+		result.Services = append(result.Services, "rust-service")
+		if len(metricFiles) > 0 {
+			result.Candidates = append(result.Candidates, Candidate{
+				Language:    "Rust",
+				Framework:   fwName,
+				Kind:        "metrics",
+				Patterns:    []string{"prometheus::register"},
+				Files:       metricFiles,
+				ServiceName: "rust-service",
+			})
+		}
+		if len(otelFiles) > 0 {
+			result.Candidates = append(result.Candidates, Candidate{
+				Language:    "Rust",
+				Framework:   fwName,
+				Kind:        "otel",
+				Patterns:    []string{"opentelemetry::"},
+				Files:       otelFiles,
+				ServiceName: "rust-service",
+			})
+		}
+	}
+
+	log.Printf("[scanner] ScanRepo complete: repoID=%s frameworks=%d candidates=%d", repoID, len(result.Frameworks), len(result.Candidates))
+	return result, nil
 }
 
-// Framework Detection
+// Framework Detection Functions
 func detectPython(path string) bool {
-    files := []string{"requirements.txt", "setup.py", "pyproject.toml", "Pipfile"}
-    for _, f := range files {
-        if _, err := os.Stat(filepath.Join(path, f)); err == nil {
-            return true
-        }
-    }
-    return false
+	// Detect Python by walking the repository looking for any .py files.
+	found := false
+	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if d.IsDir() {
+			base := filepath.Base(p)
+			if base == "venv" || base == "vendor" || base == "__pycache__" || base == ".git" || base == ".venv" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(p, ".py") {
+			found = true
+			return nil
+		}
+		return nil
+	})
+	return found
 }
 
-func detectDjango(path string) bool {
-    content, _ := os.ReadFile(filepath.Join(path, "requirements.txt"))
-    return strings.Contains(string(content), "django")
-}
+func detectPythonFramework(path string) string {
+	// Try top-level requirements.txt first
+	content, _ := os.ReadFile(filepath.Join(path, "requirements.txt"))
+	contentStr := strings.ToLower(string(content))
+	if strings.Contains(contentStr, "flask") {
+		return "Flask"
+	} else if strings.Contains(contentStr, "django") {
+		return "Django"
+	} else if strings.Contains(contentStr, "fastapi") {
+		return "FastAPI"
+	}
 
-func detectFlask(path string) bool {
-    content, _ := os.ReadFile(filepath.Join(path, "requirements.txt"))
-    return strings.Contains(string(content), "flask")
+	// If not found, search for any requirements.txt in the tree and inspect it
+	var foundFW string
+	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || foundFW != "" {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Base(p), "requirements.txt") {
+			b, _ := os.ReadFile(p)
+			s := strings.ToLower(string(b))
+			if strings.Contains(s, "flask") {
+				foundFW = "Flask"
+			} else if strings.Contains(s, "django") {
+				foundFW = "Django"
+			} else if strings.Contains(s, "fastapi") {
+				foundFW = "FastAPI"
+			}
+		}
+		return nil
+	})
+	if foundFW != "" {
+		return foundFW
+	}
+	return "Python"
 }
 
 func detectGo(path string) bool {
-    _, err := os.Stat(filepath.Join(path, "go.mod"))
-    return err == nil
+	// Search recursively for a go.mod file anywhere in the repo tree
+	found := false
+	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if d.IsDir() {
+			base := filepath.Base(p)
+			if base == "vendor" || base == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Base(p) == "go.mod" {
+			found = true
+			return nil
+		}
+		return nil
+	})
+	return found
+}
+
+func detectGoFramework(path string) string {
+	// Look for the nearest go.mod in the tree and inspect it
+	var modPath string
+	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || modPath != "" {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if filepath.Base(p) == "go.mod" {
+			modPath = p
+		}
+		return nil
+	})
+	if modPath != "" {
+		content, _ := os.ReadFile(modPath)
+		contentStr := string(content)
+		if strings.Contains(contentStr, "github.com/gin-gonic/gin") {
+			return "Gin"
+		} else if strings.Contains(contentStr, "github.com/labstack/echo") {
+			return "Echo"
+		} else if strings.Contains(contentStr, "github.com/go-chi/chi") {
+			return "Chi"
+		} else if strings.Contains(contentStr, "github.com/gorilla/mux") {
+			return "Gorilla Mux"
+		}
+	}
+	return "Go"
 }
 
 func detectJava(path string) bool {
-    files := []string{"pom.xml", "build.gradle"}
-    for _, f := range files {
-        if _, err := os.Stat(filepath.Join(path, f)); err == nil {
-            return true
-        }
-    }
-    return false
+	files := []string{"pom.xml", "build.gradle", "build.gradle.kts"}
+	for _, f := range files {
+		if _, err := os.Stat(filepath.Join(path, f)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func detectJavaFramework(path string) string {
+	pomContent, _ := os.ReadFile(filepath.Join(path, "pom.xml"))
+	gradleContent, _ := os.ReadFile(filepath.Join(path, "build.gradle"))
+
+	content := string(pomContent) + string(gradleContent)
+
+	if strings.Contains(content, "spring-boot") {
+		return "Spring Boot"
+	} else if strings.Contains(content, "quarkus") {
+		return "Quarkus"
+	} else if strings.Contains(content, "micronaut") {
+		return "Micronaut"
+	}
+	return "Java"
 }
 
 func detectDotnet(path string) bool {
-    files, _ := filepath.Glob(filepath.Join(path, "*.csproj"))
-    return len(files) > 0
+	files, _ := filepath.Glob(filepath.Join(path, "*.csproj"))
+	return len(files) > 0
 }
 
 func detectNode(path string) bool {
-    _, err := os.Stat(filepath.Join(path, "package.json"))
-    return err == nil
+	_, err := os.Stat(filepath.Join(path, "package.json"))
+	return err == nil
+}
+
+func detectNodeFramework(path string) string {
+	content, _ := os.ReadFile(filepath.Join(path, "package.json"))
+	contentStr := string(content)
+
+	if strings.Contains(contentStr, "\"express\"") {
+		return "Express"
+	} else if strings.Contains(contentStr, "\"@nestjs/core\"") {
+		return "NestJS"
+	} else if strings.Contains(contentStr, "\"fastify\"") {
+		return "Fastify"
+	} else if strings.Contains(contentStr, "\"koa\"") {
+		return "Koa"
+	}
+	return "Node.js"
 }
 
 func detectRust(path string) bool {
-    _, err := os.Stat(filepath.Join(path, "Cargo.toml"))
-    return err == nil
+	_, err := os.Stat(filepath.Join(path, "Cargo.toml"))
+	return err == nil
 }
 
-// TWO-PASS METRICS DETECTION
-// Pass 1: Check for registration/initialization
-// Pass 2: Check for actual usage
-func detectMetrics(path string, framework string) bool {
-    // Registration patterns - metrics must be registered
-    registrationPatterns := map[string][]string{
-        "Python": {
-            "prometheus_client.start_http_server(",
-            "start_http_server(",
-            "CollectorRegistry()",
-        },
-        "Go": {
-            "prometheus.MustRegister(",
-            "prometheus.Register(",
-            "registry.MustRegister(",
-            "registry.Register(",
-        },
-        "Java": {
-            "new PrometheusMeterRegistry(",
-            "new SimpleMeterRegistry(",
-            "@Bean.*MeterRegistry",
-        },
-        ".NET": {
-            "UsePrometheusServer(",
-            "new KestrelMetricServer(",
-        },
-        "Node.js": {
-            "register.registerMetric(",
-            "collectDefaultMetrics(",
-        },
-        "Rust": {
-            "prometheus::register(",
-        },
-    }
+// Metrics Detection
+// Returns a slice of file paths that matched any of the metrics patterns for the framework
+func detectMetrics(path string, framework string) []string {
+	metricsPatterns := map[string][]string{
+		"Python": {
+			"start_http_server(",
+			"generate_latest(",
+			"prometheus_client",
+		},
+		"Go": {
+			"http.Handle(\"/metrics\"",
+			"promhttp.Handler()",
+			"prometheus.MustRegister(",
+		},
+		"Java": {
+			"MeterRegistry",
+			"PrometheusMeterRegistry",
+		},
+		".NET": {
+			"UsePrometheusServer",
+		},
+		"Node.js": {
+			"register.metrics()",
+			"prom-client",
+		},
+		"Rust": {
+			"prometheus::register",
+		},
+	}
 
-    // Usage patterns - metrics must be actually used
-    usagePatterns := map[string][]string{
-        "Python": {
-            ".inc(",
-            ".dec(",
-            ".set(",
-            ".observe(",
-        },
-        "Go": {
-            ".Inc(",
-            ".Dec(",
-            ".Add(",
-            ".Set(",
-            ".Observe(",
-            "promhttp.Handler()",
-            "http.Handle(\"/metrics\"",
-            "http.HandleFunc(\"/metrics\"",
-            "router.GET(\"/metrics\"",
-            "router.Handle(\"/metrics\"",
-        },
-        "Java": {
-            ".counter(",
-            ".gauge(",
-            ".timer(",
-            ".increment(",
-        },
-        ".NET": {
-            ".Inc(",
-            ".Set(",
-            ".Observe(",
-        },
-        "Node.js": {
-            ".inc(",
-            ".set(",
-            ".observe(",
-            "register.metrics()",
-        },
-        "Rust": {
-            ".inc(",
-            ".set(",
-            ".observe(",
-        },
-    }
+	patterns := metricsPatterns[framework]
+	if patterns == nil {
+		return nil
+	}
 
-    regPatterns := registrationPatterns[framework]
-    usePatterns := usagePatterns[framework]
-    
-    if regPatterns == nil || usePatterns == nil {
-        return false
-    }
+	filesSet := map[string]struct{}{}
+	for _, pattern := range patterns {
+		files := findFilesInRepo(path, pattern)
+		for _, f := range files {
+			filesSet[f] = struct{}{}
+		}
+	}
 
-    // Must have BOTH registration AND usage
-    hasRegistration := false
-    hasUsage := false
-
-    for _, pattern := range regPatterns {
-        if searchInRepo(path, pattern) {
-            hasRegistration = true
-            break
-        }
-    }
-
-    for _, pattern := range usePatterns {
-        if searchInRepo(path, pattern) {
-            hasUsage = true
-            break
-        }
-    }
-
-    return hasRegistration && hasUsage
+	var files []string
+	for f := range filesSet {
+		files = append(files, f)
+	}
+	return files
 }
 
-// TWO-PASS OTEL DETECTION
-// Pass 1: Check for tracer provider initialization
-// Pass 2: Check for actual span creation/usage
-func detectOTel(path string, framework string) bool {
-    // Initialization patterns - tracer must be initialized
-    initPatterns := map[string][]string{
-        "Python": {
-            "TracerProvider(",
-            "OTLPSpanExporter(",
-            "JaegerExporter(",
-            "trace.set_tracer_provider(",
-        },
-        "Go": {
-            "sdktrace.NewTracerProvider(",
-            "otel.SetTracerProvider(",
-            "otlptrace",
-            "otlptracegrpc.New(",
-            "jaeger.New(",
-        },
-        "Java": {
-            "SdkTracerProvider.builder(",
-            "OpenTelemetrySdk.builder(",
-            "OtlpGrpcSpanExporter",
-        },
-        ".NET": {
-            "TracerProvider.Default.GetTracer(",
-            "new TracerProviderBuilder(",
-        },
-        "Node.js": {
-            "new NodeTracerProvider(",
-            "new BasicTracerProvider(",
-            "new OTLPTraceExporter(",
-        },
-        "Rust": {
-            "global::set_tracer_provider(",
-            "opentelemetry::sdk::trace::TracerProvider",
-        },
-    }
+// OTel Detection
+// Returns a slice of file paths that matched any of the otel patterns for the framework
+func detectOTel(path string, framework string) []string {
+	otelPatterns := map[string][]string{
+		"Python": {
+			"tracer.start_as_current_span(",
+			"OTLPSpanExporter(",
+		},
+		"Go": {
+			"tracer.Start(",
+			"sdktrace.NewTracerProvider(",
+			"otlptrace",
+		},
+		"Java": {
+			"tracer.spanBuilder(",
+			"OtlpGrpcSpanExporter",
+		},
+		".NET": {
+			"ActivitySource",
+		},
+		"Node.js": {
+			"tracer.startSpan(",
+			"@opentelemetry/sdk-trace",
+		},
+		"Rust": {
+			"opentelemetry::",
+		},
+	}
 
-    // Usage patterns - spans must be created
-    usagePatterns := map[string][]string{
-        "Python": {
-            "tracer.start_as_current_span(",
-            "tracer.start_span(",
-            "@tracer.start_as_current_span",
-        },
-        "Go": {
-            "tracer.Start(",
-            "otel.Tracer(",
-            "span.End(",
-            "span.SetAttributes(",
-        },
-        "Java": {
-            "tracer.spanBuilder(",
-            "span.end(",
-        },
-        ".NET": {
-            "tracer.StartActiveSpan(",
-            "var span =",
-        },
-        "Node.js": {
-            "tracer.startSpan(",
-            "tracer.startActiveSpan(",
-        },
-        "Rust": {
-            "tracer.in_span(",
-            "tracer.start(",
-        },
-    }
+	patterns := otelPatterns[framework]
+	if patterns == nil {
+		return nil
+	}
 
-    initPats := initPatterns[framework]
-    usePats := usagePatterns[framework]
-    
-    if initPats == nil || usePats == nil {
-        return false
-    }
+	filesSet := map[string]struct{}{}
+	for _, pattern := range patterns {
+		files := findFilesInRepo(path, pattern)
+		for _, f := range files {
+			filesSet[f] = struct{}{}
+		}
+	}
 
-    // Must have BOTH initialization AND usage
-    hasInit := false
-    hasUsage := false
-
-    for _, pattern := range initPats {
-        if searchInRepo(path, pattern) {
-            hasInit = true
-            break
-        }
-    }
-
-    for _, pattern := range usePats {
-        if searchInRepo(path, pattern) {
-            hasUsage = true
-            break
-        }
-    }
-
-    return hasInit && hasUsage
+	var files []string
+	for f := range filesSet {
+		files = append(files, f)
+	}
+	return files
 }
 
-// Helper: Search pattern in repo files recursively
-// Excludes vendor, node_modules, and test files to reduce false positives
-func searchInRepo(repoPath, pattern string) bool {
-    cmd := exec.Command("grep", "-r", "-i", 
-        "--exclude-dir=vendor",
-        "--exclude-dir=node_modules",
-        "--exclude-dir=.git",
-        "--exclude=*_test.go",
-        "--exclude=*_test.py",
-        "--exclude=*.test.js",
-        pattern, repoPath)
-    err := cmd.Run()
-    return err == nil
+// Helper: Search pattern in repo
+// Helper: run grep to find files containing the pattern (case-insensitive)
+func findFilesInRepo(repoPath, pattern string) []string {
+	cmd := exec.Command("grep", "-ril", pattern, repoPath)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	// Only consider likely source files and ignore README/requirements/docs
+	allowedExt := map[string]bool{
+		".go":    true,
+		".py":    true,
+		".java":  true,
+		".js":    true,
+		".ts":    true,
+		".cs":    true,
+		".rs":    true,
+		".kt":    true,
+		".scala": true,
+		".php":   true,
+	}
+
+	var files []string
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		ext := filepath.Ext(l)
+		if ext == "" {
+			// no extension - skip (likely directories or scripts)
+			continue
+		}
+		if !allowedExt[ext] {
+			continue
+		}
+
+		// Open file and ensure the matched pattern appears in a non-commented line.
+		b, err := os.ReadFile(l)
+		if err != nil {
+			continue
+		}
+		text := string(b)
+		ok := false
+		for _, line := range strings.Split(text, "\n") {
+			if !strings.Contains(line, pattern) {
+				continue
+			}
+			trimmed := strings.TrimSpace(line)
+			// Language-agnostic comment checks for common single-line markers
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "<!--") {
+				// commented line, skip
+				continue
+			}
+			// also skip lines where pattern appears after // comment marker
+			if idx := strings.Index(line, "//"); idx != -1 {
+				if strings.Contains(line[:idx], pattern) {
+					ok = true
+					break
+				}
+				// pattern is in comment portion -> skip this occurrence
+				continue
+			}
+			// crude check for block comment markers on the same line
+			if strings.Contains(trimmed, "/*") || strings.Contains(trimmed, "*/") || strings.HasPrefix(trimmed, "*") {
+				// skip this occurrence, better heuristics would parse code per-language
+				continue
+			}
+
+			// If we reach here, the pattern appears on a non-commented line
+			ok = true
+			break
+		}
+		if ok {
+			files = append(files, l)
+		}
+	}
+	return files
 }

@@ -20,7 +20,7 @@ import {
   InputAdornment,
   CircularProgress,
   Chip,
-  Alert,
+  
   IconButton,
 } from "@mui/material";
 import FolderIcon from "@mui/icons-material/Folder";
@@ -102,14 +102,17 @@ export default function ImportForm({
     fetchRepos();
   }, []);
 
-  const fetchRepos = async () => {
+  const fetchRepos = async (): Promise<Repo[]> => {
     setFetchingRepos(true);
     try {
       const response = await axios.get(API_ENDPOINTS.REPOS);
-      setRepos(response.data || []);
+      const list = response.data || [];
+      setRepos(list);
+      return list;
     } catch (error) {
       console.error("Failed to fetch repos:", error);
       setRepos([]);
+      return [];
     } finally {
       setFetchingRepos(false);
     }
@@ -172,8 +175,17 @@ export default function ImportForm({
       setSelectedMode("none");
       setScanResult(null);
       setShowScanResult(false);
-      
-      await fetchRepos();
+      // Refresh repo list and auto-select the newly imported repo
+      const list = await fetchRepos();
+      // derive repo id from github url
+      const parts = githubURL.split("/");
+      let repoID = parts[parts.length - 1] || "";
+      repoID = repoID.replace(/\.git$/, "");
+      const added = list.find((r: Repo) => r.id === repoID || r.name === repoID || r.github_url === githubURL);
+      if (added) {
+        setSelectedRepo(added);
+        await onSelectRepo(added);
+      }
       if (onImportComplete) onImportComplete();
     } catch (error) {
       console.error("Import failed:", error);
@@ -291,116 +303,119 @@ export default function ImportForm({
 
   return (
     <Box sx={{ p: 0 }}>
-      <Typography variant="h6" fontWeight={700} mb={2}>
-        Repo import
-      </Typography>
+      {!selectedRepo && (
+        <>
+          <Typography variant="h6" fontWeight={700} mb={2}>
+            Repo import
+          </Typography>
 
-      <Box sx={{ display: "flex", gap: 2, mb: 2 }}>
-        <TextField
-          fullWidth
-          size="small"
-          variant="outlined"
-          placeholder="https://github.com/user/project.git"
-          value={githubURL}
-          onChange={(e) => {
-            setGithubURL(e.target.value);
-            setShowScanResult(false);
-            setScanResult(null);
-          }}
-        />
-        <Button
-          variant="outlined"
-          color="primary"
-          onClick={handleScan}
-          disabled={!githubURL || scanning}
-          sx={{ minWidth: 110, fontWeight: 700, borderRadius: 2 }}
-        >
-          {scanning ? "Scanning..." : "Scan"}
-        </Button>
-      </Box>
-
-      {showScanResult && scanResult && (
-        <Card variant="outlined" sx={{ mb: 3, borderRadius: 2 }}>
-          <CardContent>
-            <Typography variant="h6" fontWeight={700} mb={2}>
-              Scan Results
-            </Typography>
-
-            <Box display="flex" gap={1} mb={3}>
-              <Chip
-                label={`Framework: ${scanResult.framework}`}
-                size="small"
-                color="primary"
-                variant="outlined"
-              />
-              <Chip
-                icon={scanResult.has_metrics ? <CheckCircleIcon /> : <CancelIcon />}
-                label={scanResult.has_metrics ? "Has Metrics" : "No Metrics"}
-                size="small"
-                color={scanResult.has_metrics ? "success" : "default"}
-              />
-              <Chip
-                icon={scanResult.has_otel ? <CheckCircleIcon /> : <CancelIcon />}
-                label={scanResult.has_otel ? "Has Traces" : "No Traces"}
-                size="small"
-                color={scanResult.has_otel ? "info" : "default"}
-              />
-            </Box>
-
-            <FormControl component="fieldset" sx={{ mb: 2, width: "100%" }}>
-              <FormLabel component="legend" sx={{ fontWeight: 700, mb: 2 }}>
-                Select Telemetry Mode to Add
-              </FormLabel>
-              <RadioGroup
-                value={selectedMode}
-                onChange={(e) => setSelectedMode(e.target.value)}
-              >
-                {telemetryModes.map((tm) => {
-                  const disabled = isOptionDisabled(tm.value);
-                  const reason = getDisabledReason(tm.value);
-
-                  return (
-                    <FormControlLabel
-                      key={tm.value}
-                      value={tm.value}
-                      control={<Radio />}
-                      disabled={disabled}
-                      label={
-                        <Box>
-                          <Typography
-                            fontWeight={600}
-                            variant="body1"
-                            color={disabled ? "text.disabled" : "text.primary"}
-                          >
-                            {tm.label}
-                          </Typography>
-                          <Typography
-                            variant="caption"
-                            color={disabled ? "text.disabled" : "text.secondary"}
-                            sx={{ pl: 0.5 }}
-                          >
-                            {disabled ? reason : tm.description}
-                          </Typography>
-                        </Box>
-                      }
-                      sx={{ alignItems: "flex-start", mb: 1.5 }}
-                    />
-                  );
-                })}
-              </RadioGroup>
-            </FormControl>
-
+          <Box sx={{ display: "flex", gap: 2, mb: 2 }}>
+            <TextField
+              fullWidth
+              size="small"
+              variant="outlined"
+              placeholder="https://github.com/user/project.git"
+              value={githubURL}
+              onChange={(e) => {
+                setGithubURL(e.target.value);
+                setShowScanResult(false);
+                setScanResult(null);
+              }}
+            />
             <Button
-              variant="contained"
+              variant="outlined"
               color="primary"
-              onClick={handleImport}
-              disabled={loading}
-              sx={{ fontWeight: 700 }}
+              onClick={handleScan}
+              disabled={!githubURL || scanning}
+              sx={{ minWidth: 110, fontWeight: 700, borderRadius: 2 }}
             >
-              {loading ? "Importing..." : "Import with Selected Mode"}
+              {scanning ? "Scanning..." : "Scan"}
             </Button>
-          </CardContent>
-        </Card>
+          </Box>
+
+          {showScanResult && scanResult && (
+            <Card variant="outlined" sx={{ mb: 3, borderRadius: 2 }}>
+              <CardContent>
+                <Typography variant="h6" fontWeight={700} mb={2}>
+                  Scan Results
+                </Typography>
+                <Box display="flex" gap={1} mb={3}>
+                  <Chip
+                    label={`Framework: ${scanResult.framework}`}
+                    size="small"
+                    color="primary"
+                    variant="outlined"
+                  />
+                  <Chip
+                    icon={scanResult.has_metrics ? <CheckCircleIcon /> : <CancelIcon />}
+                    label={scanResult.has_metrics ? "Has Metrics" : "No Metrics"}
+                    size="small"
+                    color={scanResult.has_metrics ? "success" : "default"}
+                  />
+                  <Chip
+                    icon={scanResult.has_otel ? <CheckCircleIcon /> : <CancelIcon />}
+                    label={scanResult.has_otel ? "Has Traces" : "No Traces"}
+                    size="small"
+                    color={scanResult.has_otel ? "info" : "default"}
+                  />
+                </Box>
+
+                <FormControl component="fieldset" sx={{ mb: 2, width: "100%" }}>
+                  <FormLabel component="legend" sx={{ fontWeight: 700, mb: 2 }}>
+                    Select Telemetry Mode to Add
+                  </FormLabel>
+                  <RadioGroup
+                    value={selectedMode}
+                    onChange={(e) => setSelectedMode(e.target.value)}
+                  >
+                    {telemetryModes.map((tm) => {
+                      const disabled = isOptionDisabled(tm.value);
+                      const reason = getDisabledReason(tm.value);
+
+                      return (
+                        <FormControlLabel
+                          key={tm.value}
+                          value={tm.value}
+                          control={<Radio />}
+                          disabled={disabled}
+                          label={
+                            <Box>
+                              <Typography
+                                fontWeight={600}
+                                variant="body1"
+                                color={disabled ? "text.disabled" : "text.primary"}
+                              >
+                                {tm.label}
+                              </Typography>
+                              <Typography
+                                variant="caption"
+                                color={disabled ? "text.disabled" : "text.secondary"}
+                                sx={{ pl: 0.5 }}
+                              >
+                                {disabled ? reason : tm.description}
+                              </Typography>
+                            </Box>
+                          }
+                          sx={{ alignItems: "flex-start", mb: 1.5 }}
+                        />
+                      );
+                    })}
+                  </RadioGroup>
+                </FormControl>
+
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={handleImport}
+                  disabled={loading}
+                  sx={{ fontWeight: 700 }}
+                >
+                  {loading ? "Importing..." : "Import with Selected Mode"}
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+        </>
       )}
 
       <TextField
@@ -504,32 +519,33 @@ export default function ImportForm({
                 </Button>
               )}
             </Box>
-            {serviceInfo && (
-              <Box display="flex" gap={1} mb={2}>
-                <Chip
-                  label={`Framework: ${serviceInfo.framework}`}
-                  size="small"
-                  color="primary"
-                  variant="outlined"
-                />
-                {serviceInfo.has_metrics && (
+            {(() => {
+              const info = serviceInfo
+                ? serviceInfo
+                : { framework: selectedRepo.name || "Unknown", has_metrics: false, has_otel: false };
+              return (
+                <Box display="flex" gap={1} mb={2}>
                   <Chip
-                    icon={<CheckCircleIcon />}
-                    label="Has Metrics"
+                    label={`Framework: ${info.framework}`}
                     size="small"
-                    color="success"
+                    color="primary"
+                    variant="outlined"
                   />
-                )}
-                {serviceInfo.has_otel && (
                   <Chip
-                    icon={<CheckCircleIcon />}
-                    label="Has Traces"
+                    icon={info.has_metrics ? <CheckCircleIcon /> : <CancelIcon />}
+                    label={info.has_metrics ? "Has Metrics" : "No Metrics"}
                     size="small"
-                    color="info"
+                    color={info.has_metrics ? "success" : "default"}
                   />
-                )}
-              </Box>
-            )}
+                  <Chip
+                    icon={info.has_otel ? <CheckCircleIcon /> : <CancelIcon />}
+                    label={info.has_otel ? "Has Traces" : "No Traces"}
+                    size="small"
+                    color={info.has_otel ? "info" : "default"}
+                  />
+                </Box>
+              );
+            })()}
 
             <FormControl component="fieldset" sx={{ mb: 2, width: "100%" }}>
               <FormLabel component="legend" sx={{ fontWeight: 700, mb: 2 }}>
@@ -585,7 +601,6 @@ export default function ImportForm({
               >
                 {updatingMode ? "Updating..." : "Update Telemetry Mode"}
               </Button>
-              
               <Button
                 variant="outlined"
                 color="secondary"
@@ -594,6 +609,27 @@ export default function ImportForm({
                 sx={{ fontWeight: 700, flex: 1 }}
               >
                 {creatingPR ? "Creating PR..." : "Scan & Create PR"}
+              </Button>
+
+              <Button
+                variant="outlined"
+                color="info"
+                onClick={async () => {
+                  if (!selectedRepo) return;
+                  try {
+                    await axios.post(`${API_ENDPOINTS.REPOS}/${selectedRepo.id}/rescan`);
+                    // Refresh repo details
+                    await fetchRepos();
+                    await onSelectRepo(selectedRepo);
+                    alert('Rescan complete');
+                  } catch (e) {
+                    console.error('Rescan failed', e);
+                    alert('Rescan failed. See console.');
+                  }
+                }}
+                sx={{ fontWeight: 700, flex: 1 }}
+              >
+                Rescan
               </Button>
             </Box>
           </CardContent>

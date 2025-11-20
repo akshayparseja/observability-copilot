@@ -32,6 +32,7 @@ func CreateInstrumentationPR(
 	plan *generator.InstrumentationPlan,
 	hasMetrics bool,
 	hasOtel bool,
+	baseBranch string,
 ) (string, error) {
 
 	// Get GitHub token first
@@ -70,8 +71,15 @@ func CreateInstrumentationPR(
 	// Create branch name based on what we're adding
 	branchName := getBranchName(plan.Mode, hasMetrics, hasOtel)
 
-	// Create and checkout new branch
-	cmd = exec.Command("git", "-C", tmpDir, "checkout", "-b", branchName)
+	// Create and checkout new branch based on the selected baseBranch (if provided)
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	// Ensure we have the base branch available locally
+	cmd = exec.Command("git", "-C", tmpDir, "fetch", "origin", baseBranch)
+	_ = cmd.Run()
+	// Create branch from baseBranch
+	cmd = exec.Command("git", "-C", tmpDir, "checkout", "-b", branchName, baseBranch)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("git checkout failed: %w", err)
 	}
@@ -80,24 +88,57 @@ func CreateInstrumentationPR(
 	for _, change := range plan.Changes {
 		filePath := filepath.Join(tmpDir, change.Path)
 
-		if change.Action == "append" {
-			// Append to existing file
-			f, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0644)
-			if err != nil {
-				return "", fmt.Errorf("failed to open %s: %w", change.Path, err)
+		switch change.Action {
+		case "append":
+			// If LineAfter provided, insert after the matching line; else append to file
+			if change.LineAfter != "" {
+				if err := insertAfterLine(filePath, change.LineAfter, change.Content); err != nil {
+					return "", fmt.Errorf("failed to modify %s: %w", change.Path, err)
+				}
+			} else {
+				f, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0644)
+				if err != nil {
+					return "", fmt.Errorf("failed to open %s: %w", change.Path, err)
+				}
+				_, err = f.WriteString(change.Content)
+				f.Close()
+				if err != nil {
+					return "", err
+				}
 			}
-			_, err = f.WriteString(change.Content)
-			f.Close()
-			if err != nil {
-				return "", err
+		case "create":
+			// Create new file (and parent dirs)
+			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+				return "", fmt.Errorf("failed to create dirs for %s: %w", change.Path, err)
 			}
-		} else if change.Action == "create" {
-			// Create new file
 			err := os.WriteFile(filePath, []byte(change.Content), 0644)
 			if err != nil {
 				return "", err
 			}
+		case "modify":
+			// Modify: insert after a matching line or replace a marker
+			if change.LineAfter == "" {
+				return "", fmt.Errorf("modify action requires LineAfter for %s", change.Path)
+			}
+			if err := insertAfterLine(filePath, change.LineAfter, change.Content); err != nil {
+				return "", fmt.Errorf("failed to modify %s: %w", change.Path, err)
+			}
+		default:
+			return "", fmt.Errorf("unknown action: %s", change.Action)
 		}
+	}
+
+	// Run gofmt and build to validate changes before committing
+	cmd = exec.Command("gofmt", "-w", ".")
+	cmd.Dir = tmpDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("gofmt failed: %v, output: %s", err, string(out))
+	}
+
+	cmd = exec.Command("go", "build", "./...")
+	cmd.Dir = tmpDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("go build failed: %v, output: %s", err, string(out))
 	}
 
 	// Git add
@@ -127,12 +168,37 @@ func CreateInstrumentationPR(
 	}
 
 	// Create PR via GitHub API
-	prURL, err := createGitHubPR(owner, repo, branchName, commitMsg, plan, token)
+	prURL, err := createGitHubPR(owner, repo, branchName, commitMsg, plan, baseBranch, token)
 	if err != nil {
 		return "", fmt.Errorf("failed to create PR: %w", err)
 	}
 
 	return prURL, nil
+}
+
+// insertAfterLine inserts `content` after the first occurrence of `matchLine` in filePath.
+// If matchLine is not found, it appends the content at the end.
+func insertAfterLine(filePath, matchLine, content string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	var outLines []string
+	inserted := false
+	for _, line := range lines {
+		outLines = append(outLines, line)
+		if !inserted && strings.Contains(line, matchLine) {
+			// Insert content after this line
+			outLines = append(outLines, content)
+			inserted = true
+		}
+	}
+	if !inserted {
+		outLines = append(outLines, content)
+	}
+	newData := strings.Join(outLines, "\n")
+	return os.WriteFile(filePath, []byte(newData), 0644)
 }
 
 func parseRepoURL(url string) (owner, repo string) {
@@ -188,12 +254,15 @@ func getCommitMessage(mode string, hasMetrics, hasOtel bool) string {
 	return "feat: Add observability instrumentation"
 }
 
-func createGitHubPR(owner, repo, branch, title string, plan *generator.InstrumentationPlan, token string) (string, error) {
+func createGitHubPR(owner, repo, branch, title string, plan *generator.InstrumentationPlan, baseBranch string, token string) (string, error) {
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
 	prReq := PRRequest{
 		Title: title,
 		Body:  generatePRBody(plan),
 		Head:  branch,
-		Base:  "main", // or "master" - you could make this configurable
+		Base:  baseBranch,
 	}
 
 	body, _ := json.Marshal(prReq)
