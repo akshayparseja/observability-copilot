@@ -85,6 +85,7 @@ func CreateInstrumentationPR(
 	}
 
 	// Apply changes from plan
+	modifiedFiles := []string{}
 	for _, change := range plan.Changes {
 		filePath := filepath.Join(tmpDir, change.Path)
 
@@ -96,15 +97,33 @@ func CreateInstrumentationPR(
 					return "", fmt.Errorf("failed to modify %s: %w", change.Path, err)
 				}
 			} else {
-				f, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0644)
-				if err != nil {
-					return "", fmt.Errorf("failed to open %s: %w", change.Path, err)
-				}
-				_, err = f.WriteString(change.Content)
-				f.Close()
-				if err != nil {
-					return "", err
-				}
+					// Ensure parent directory exists
+					if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+						return "", fmt.Errorf("failed to create parent dirs for %s: %w", change.Path, err)
+					}
+					// Determine if file already exists
+					_, statErr := os.Stat(filePath)
+					willCreate := os.IsNotExist(statErr)
+					// Open file for append, create if not exists
+					f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+					if err != nil {
+						return "", fmt.Errorf("failed to open %s: %w", change.Path, err)
+					}
+					// If we're creating a new Go file, ensure it has a package declaration
+					if willCreate && strings.HasSuffix(filePath, ".go") {
+						contentToWrite := change.Content
+						if !strings.Contains(contentToWrite, "package ") {
+							contentToWrite = "package main\n\n" + contentToWrite
+						}
+						_, err = f.WriteString(contentToWrite)
+					} else {
+						_, err = f.WriteString(change.Content)
+					}
+					f.Close()
+					if err != nil {
+						return "", err
+					}
+					modifiedFiles = append(modifiedFiles, change.Path)
 			}
 		case "create":
 			// Create new file (and parent dirs)
@@ -128,17 +147,48 @@ func CreateInstrumentationPR(
 		}
 	}
 
-	// Run gofmt and build to validate changes before committing
-	cmd = exec.Command("gofmt", "-w", ".")
-	cmd.Dir = tmpDir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("gofmt failed: %v, output: %s", err, string(out))
+	// Run gofmt on created/modified Go files (if any) and build to validate changes before committing
+	var goFiles []string
+	for _, p := range modifiedFiles {
+		if strings.HasSuffix(p, ".go") {
+			goFiles = append(goFiles, filepath.Join(tmpDir, p))
+		}
+	}
+	if len(goFiles) > 0 {
+		args := append([]string{"-w"}, goFiles...)
+		cmd = exec.Command("gofmt", args...)
+		cmd.Dir = tmpDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			// include a snippet of the first offending file if possible
+			outStr := string(out)
+			return "", fmt.Errorf("gofmt failed: %v, output: %s", err, outStr)
+		}
 	}
 
-	cmd = exec.Command("go", "build", "./...")
-	cmd.Dir = tmpDir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go build failed: %v, output: %s", err, string(out))
+	// Locate nearest go.mod in the repository (search the tree). If found,
+	// run `go build ./...` from that module root so builds succeed for repos
+	// with modules in subfolders.
+	moduleRoot := ""
+	_ = filepath.WalkDir(tmpDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || moduleRoot != "" {
+			return nil
+		}
+		if !d.IsDir() && filepath.Base(p) == "go.mod" {
+			moduleRoot = filepath.Dir(p)
+			return nil
+		}
+		return nil
+	})
+
+	if moduleRoot != "" {
+		cmd = exec.Command("go", "build", "./...")
+		cmd.Dir = moduleRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("go build failed: %v, output: %s", err, string(out))
+		}
+	} else {
+		// No go.mod found — skip global `go build`.
+		fmt.Printf("⚠️ go.mod not found in repo; skipping 'go build ./...'; building skipped for %s\n", tmpDir)
 	}
 
 	// Git add
@@ -181,6 +231,13 @@ func CreateInstrumentationPR(
 func insertAfterLine(filePath, matchLine, content string) error {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
+		// If file doesn't exist, create it with the content
+		if os.IsNotExist(err) {
+			if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+				return err
+			}
+			return os.WriteFile(filePath, []byte(content), 0644)
+		}
 		return err
 	}
 	lines := strings.Split(string(data), "\n")

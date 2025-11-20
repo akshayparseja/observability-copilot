@@ -159,29 +159,29 @@ func main() {
 				"name":       name,
 				"github_url": githubURL, // ADD THIS
 			})
-
-			// GET branches for a repo (used by frontend to populate branch dropdown)
-			router.GET("/api/v1/repos/:repo_id/branches", func(c *gin.Context) {
-				repoID := c.Param("repo_id")
-				var githubURL string
-				if err := db.QueryRow("SELECT github_url FROM repos WHERE id = $1", repoID).Scan(&githubURL); err != nil {
-					c.JSON(404, gin.H{"error": "Repo not found"})
-					return
-				}
-
-				// Try using server-side GITHUB_TOKEN if available for private repos
-				token := os.Getenv("GITHUB_TOKEN")
-				branches, err := github.ListBranches(githubURL, token)
-				if err != nil {
-					c.JSON(500, gin.H{"error": err.Error()})
-					return
-				}
-
-				c.JSON(200, gin.H{"branches": branches})
-			})
 		}
 
 		c.JSON(200, repos)
+	})
+
+	// GET branches for a repo (used by frontend to populate branch dropdown)
+	router.GET("/api/v1/repos/:repo_id/branches", func(c *gin.Context) {
+		repoID := c.Param("repo_id")
+		var githubURL string
+		if err := db.QueryRow("SELECT github_url FROM repos WHERE id = $1", repoID).Scan(&githubURL); err != nil {
+			c.JSON(404, gin.H{"error": "Repo not found"})
+			return
+		}
+
+		// Try using server-side GITHUB_TOKEN if available for private repos
+		token := os.Getenv("GITHUB_TOKEN")
+		branches, err := github.ListBranches(githubURL, token)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(200, gin.H{"branches": branches})
 	})
 	router.POST("/api/v1/repos/:repo_id/create-pr", func(c *gin.Context) {
 		repoID := c.Param("repo_id")

@@ -20,6 +20,9 @@ import {
   InputAdornment,
   CircularProgress,
   Chip,
+  Select,
+  MenuItem,
+  FormHelperText,
   
   IconButton,
 } from "@mui/material";
@@ -94,6 +97,8 @@ export default function ImportForm({
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scanning, setScanning] = useState(false);
   const [showScanResult, setShowScanResult] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>("");
   
   // NEW: PR creation state
   const [creatingPR, setCreatingPR] = useState(false);
@@ -198,6 +203,8 @@ export default function ImportForm({
   const onSelectRepo = async (repo: Repo) => {
     setSelectedRepo(repo);
     setServiceInfo(null);
+    setBranches([]);
+    setSelectedBranch("");
 
     try {
       const planRes = await axios.get(API_ENDPOINTS.PLAN(repo.id));
@@ -212,6 +219,18 @@ export default function ImportForm({
         API_ENDPOINTS.TOGGLES(repo.id, svcName, "dev")
       );
       setSelectedMode(toggleRes.data.telemetry_mode || "none");
+      // Fetch branches for this repo to show branch dropdown
+      try {
+        const br = await axios.get(API_ENDPOINTS.BRANCHES(repo.id));
+        const list = br.data.branches || [];
+        setBranches(list);
+        // prefer 'main' or 'master' if present
+        if (list.includes("main")) setSelectedBranch("main");
+        else if (list.includes("master")) setSelectedBranch("master");
+        else if (list.length > 0) setSelectedBranch(list[0]);
+      } catch (bErr) {
+        console.error("Failed to fetch branches:", bErr);
+      }
     } catch (error) {
       console.error("Failed to fetch repo details:", error);
       setSelectedMode("none");
@@ -244,7 +263,7 @@ export default function ImportForm({
     try {
       const response = await axios.post(
         `${API_ENDPOINTS.REPOS}/${selectedRepo.id}/create-pr`,
-        { telemetry_mode: selectedMode }
+        { telemetry_mode: selectedMode, branch: selectedBranch }
       );
       
       const prURL = response.data.pr_url;
@@ -592,6 +611,21 @@ export default function ImportForm({
             
             {/* UPDATED: Two buttons side by side */}
             <Box display="flex" gap={2}>
+              <FormControl sx={{ minWidth: 220 }}>
+                <Select
+                  size="small"
+                  value={selectedBranch}
+                  displayEmpty
+                  onChange={(e) => setSelectedBranch(e.target.value as string)}
+                >
+                  <MenuItem value="">(select branch)</MenuItem>
+                  {branches.map((b) => (
+                    <MenuItem key={b} value={b}>{b}</MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText>Select base branch for scan/PR</FormHelperText>
+              </FormControl>
+
               <Button
                 variant="contained"
                 color="primary"
@@ -617,7 +651,7 @@ export default function ImportForm({
                 onClick={async () => {
                   if (!selectedRepo) return;
                   try {
-                    await axios.post(`${API_ENDPOINTS.REPOS}/${selectedRepo.id}/rescan`);
+                    await axios.post(`${API_ENDPOINTS.REPOS}/${selectedRepo.id}/rescan`, { branch: selectedBranch });
                     // Refresh repo details
                     await fetchRepos();
                     await onSelectRepo(selectedRepo);
